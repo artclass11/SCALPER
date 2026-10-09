@@ -1,10 +1,17 @@
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from scalper.brokers import alpaca_paper
-from scalper.brokers.alpaca_paper import AlpacaPaperBroker, BrokerConfigurationError, BrokerOrderConflict
+from scalper.brokers.alpaca_paper import (
+    AlpacaPaperBroker,
+    BrokerConfigurationError,
+    BrokerOrderConflict,
+    BrokerRequestError,
+    _order_summary,
+)
 
 
 def test_broker_uses_only_paper_trading_host():
@@ -30,7 +37,12 @@ def test_symbols_cannot_escape_api_path():
 
 
 def test_order_id_conflict_is_a_specific_broker_error():
-    assert issubclass(BrokerOrderConflict, Exception)
+    assert issubclass(BrokerOrderConflict, BrokerRequestError)
+
+
+def test_order_summary_rejects_incomplete_broker_payload():
+    with pytest.raises(BrokerRequestError, match="incomplete order payload"):
+        _order_summary({"id": "only-id"})
 
 
 def test_order_matching_rejects_different_size_or_side():
@@ -38,3 +50,37 @@ def test_order_matching_rejects_different_size_or_side():
     assert AlpacaPaperBroker.order_matches(order, symbol="SPY", side="buy", quantity=1, limit_price=100)
     assert not AlpacaPaperBroker.order_matches(order, symbol="SPY", side="sell", quantity=1, limit_price=100)
     assert not AlpacaPaperBroker.order_matches(order, symbol="SPY", side="buy", quantity=2, limit_price=100)
+
+
+def test_existing_order_id_is_idempotent_and_does_not_submit_again():
+    broker = object.__new__(AlpacaPaperBroker)
+    existing = {"id": "existing-id", "client_order_id": "scalper-unit-order1", "symbol": "SPY",
+                "side": "buy", "qty": "1", "limit_price": "100", "status": "accepted"}
+    broker.get_order_by_client_order_id = AsyncMock(return_value=existing)
+    broker._json_request = AsyncMock(side_effect=AssertionError("Duplicate POST must not be attempted"))
+    result = asyncio.run(broker.submit_limit_order(
+        symbol="SPY", side="buy", quantity=1, limit_price=100, client_order_id="scalper-unit-order1"
+    ))
+    assert result == existing
+    broker._json_request.assert_not_called()
+
+
+def test_same_order_id_cannot_be_reused_for_different_order():
+    broker = object.__new__(AlpacaPaperBroker)
+    existing = {"id": "existing-id", "client_order_id": "scalper-unit-order1", "symbol": "SPY",
+                "side": "buy", "qty": "1", "limit_price": "100", "status": "accepted"}
+    broker.get_order_by_client_order_id = AsyncMock(return_value=existing)
+    with pytest.raises(BrokerOrderConflict):
+        asyncio.run(broker.submit_limit_order(
+            symbol="SPY", side="sell", quantity=1, limit_price=100, client_order_id="scalper-unit-order1"
+        ))
+
+
+def test_zero_after_precision_rounding_is_rejected():
+    broker = object.__new__(AlpacaPaperBroker)
+    broker.get_order_by_client_order_id = AsyncMock(side_effect=AssertionError("Must reject before network call"))
+    with pytest.raises(ValueError, match="precision"):
+        asyncio.run(broker.submit_limit_order(
+            symbol="SPY", side="buy", quantity=0.0000001, limit_price=100,
+            client_order_id="scalper-unit-order1",
+        ))
