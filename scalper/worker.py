@@ -27,14 +27,14 @@ def _closed_bars(bars: list[dict], timeframe: str) -> list[dict]:
     duration = _frame_duration(timeframe)
     result = []
     for bar in bars:
+        stamp = None
         try:
-            stamp = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=timezone.utc)
-            if now >= stamp + duration + timedelta(seconds=3):
-                result.append(bar)
+            parsed = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
+            stamp = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         except (TypeError, ValueError, KeyError):
-            continue
+            stamp = None
+        if stamp is not None and now >= stamp + duration + timedelta(seconds=3):
+            result.append(bar)
     return result
 
 
