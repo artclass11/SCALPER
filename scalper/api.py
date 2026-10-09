@@ -62,6 +62,12 @@ class SecurityHeadersMiddleware:
         self.inner_app = inner_app
 
     async def __call__(self, scope, receive, send):
+        # ASGI lifespan/websocket messages are not HTTP responses; never mutate
+        # protocol messages by adding HTTP response headers to them.
+        if scope.get("type") != "http":
+            await self.inner_app(scope, receive, send)
+            return
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
