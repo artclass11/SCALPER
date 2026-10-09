@@ -84,3 +84,17 @@ def test_zero_after_precision_rounding_is_rejected():
             symbol="SPY", side="buy", quantity=0.0000001, limit_price=100,
             client_order_id="scalper-unit-order1",
         ))
+
+
+def test_broker_timeout_reconciles_accepted_order_by_stable_client_id():
+    broker = object.__new__(AlpacaPaperBroker)
+    existing = {"id": "existing-id", "client_order_id": "scalper-unit-order1", "symbol": "SPY",
+                "side": "buy", "qty": "1", "limit_price": "100", "status": "accepted"}
+    broker.get_order_by_client_order_id = AsyncMock(side_effect=[None, existing])
+    broker._json_request = AsyncMock(side_effect=BrokerRequestError("simulated timeout"))
+    result = asyncio.run(broker.submit_limit_order(
+        symbol="SPY", side="buy", quantity=1, limit_price=100, client_order_id="scalper-unit-order1"
+    ))
+    assert result == existing
+    assert broker._json_request.await_count == 1
+    assert broker.get_order_by_client_order_id.await_count == 2
