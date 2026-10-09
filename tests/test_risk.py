@@ -1,3 +1,5 @@
+import math
+
 from scalper.risk import check_limit_order
 
 
@@ -33,3 +35,12 @@ def test_rejects_daily_loss_limit():
                                account_equity=10000, daily_pnl_pct=-3, kill_switch=False)
     assert not result.approved
     assert "daily_loss_limit_reached" in result.reasons
+
+
+def test_rejects_nan_without_returning_nan_metrics():
+    result = check_limit_order(symbol="SPY", side="buy", quantity=float("nan"), limit_price=100,
+                               account_equity=10000, kill_switch=False)
+    assert not result.approved
+    assert "non_finite_numeric_input" in result.reasons
+    assert math.isfinite(result.order_notional)
+    assert math.isfinite(result.permitted_notional)

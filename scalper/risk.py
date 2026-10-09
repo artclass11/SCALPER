@@ -43,26 +43,36 @@ def check_limit_order(
         reasons.append("invalid_symbol")
     if side not in {"buy", "sell"}:
         reasons.append("invalid_side")
-    nums = [quantity, limit_price, account_equity, daily_pnl_pct]
-    if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in nums):
+
+    raw_numbers = [quantity, limit_price, account_equity, daily_pnl_pct]
+    finite = [
+        isinstance(value, (int, float)) and math.isfinite(value)
+        for value in raw_numbers
+    ]
+    if not all(finite):
         reasons.append("non_finite_numeric_input")
-    if quantity <= 0 or limit_price <= 0:
+    safe_quantity = float(quantity) if finite[0] else 0.0
+    safe_price = float(limit_price) if finite[1] else 0.0
+    safe_equity = float(account_equity) if finite[2] else 0.0
+    safe_daily_pnl = float(daily_pnl_pct) if finite[3] else 0.0
+
+    if safe_quantity <= 0 or safe_price <= 0:
         reasons.append("quantity_and_price_must_be_positive")
-    if account_equity <= 0:
+    if safe_equity <= 0:
         reasons.append("account_equity_must_be_positive")
 
-    notional = max(quantity, 0.0) * max(limit_price, 0.0)
+    notional = max(safe_quantity, 0.0) * max(safe_price, 0.0)
     absolute_limit = _setting("SCALPER_MAX_ORDER_NOTIONAL", 2500.0)
     max_position_pct = min(_setting("SCALPER_MAX_POSITION_PCT", 5.0), 100.0)
     daily_loss_limit = min(_setting("SCALPER_MAX_DAILY_LOSS_PCT", 2.0), 100.0)
-    permitted = min(absolute_limit, max(account_equity, 0.0) * max_position_pct / 100.0)
+    permitted = min(absolute_limit, max(safe_equity, 0.0) * max_position_pct / 100.0)
     kill = kill_switch if kill_switch is not None else (
         os.getenv("SCALPER_KILL_SWITCH", "").strip().lower() in {"1", "true", "yes", "on"}
     )
 
     if kill and not reduce_only:
         reasons.append("kill_switch_enabled")
-    if not reduce_only and daily_pnl_pct <= -daily_loss_limit:
+    if not reduce_only and safe_daily_pnl <= -daily_loss_limit:
         reasons.append("daily_loss_limit_reached")
     if not reduce_only and notional > permitted:
         reasons.append("order_exceeds_permitted_notional")
