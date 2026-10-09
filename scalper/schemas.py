@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Timeframe = Literal["1Min", "5Min", "15Min", "1Hour", "1Day"]
+SYMBOL_PATTERN = r"^[A-Z][A-Z0-9.-]{0,14}$"
 
 
 class StrictModel(BaseModel):
@@ -18,7 +19,7 @@ class StrictModel(BaseModel):
 class StrategySpec(StrictModel):
     name: str = Field(min_length=2, max_length=80)
     description: str = Field(default="", max_length=500)
-    symbol: str = Field(default="SPY", pattern=r"^[A-Z0-9./_-]{1,20}$")
+    symbol: str = Field(default="SPY", pattern=SYMBOL_PATTERN)
     timeframe: Timeframe = "1Day"
     fast_ema: int = Field(default=9, ge=2, le=200)
     slow_ema: int = Field(default=21, ge=3, le=500)
@@ -71,9 +72,9 @@ class BacktestRequest(StrictModel):
 
 
 class RiskCheckRequest(StrictModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9./_-]{1,20}$")
+    symbol: str = Field(pattern=SYMBOL_PATTERN)
     side: Literal["buy", "sell"]
-    quantity: float = Field(gt=0, le=1000000, allow_inf_nan=False)
+    quantity: float = Field(ge=0.000001, le=1000000, allow_inf_nan=False)
     limit_price: float = Field(gt=0, le=1000000, allow_inf_nan=False)
     account_equity: float = Field(gt=0, le=1000000000, allow_inf_nan=False)
     daily_pnl_pct: float = Field(default=0, ge=-100, le=100, allow_inf_nan=False)
@@ -81,10 +82,10 @@ class RiskCheckRequest(StrictModel):
 
 
 class PaperLimitOrderRequest(StrictModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9./_-]{1,20}$")
+    symbol: str = Field(pattern=SYMBOL_PATTERN)
     side: Literal["buy", "sell"]
-    quantity: float = Field(gt=0, le=1000000, allow_inf_nan=False)
-    limit_price: float = Field(gt=0, le=1000000, allow_inf_nan=False)
+    quantity: float = Field(ge=0.000001, le=1000000, allow_inf_nan=False)
+    limit_price: float = Field(ge=0.01, le=1000000, allow_inf_nan=False)
     confirmed: Literal[True]
     client_order_id: str | None = Field(default=None, min_length=8, max_length=48)
 

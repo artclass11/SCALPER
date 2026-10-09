@@ -12,7 +12,7 @@ class UnsupportedStrategy(ValueError):
 
 
 _PERIOD = re.compile(r"\bema\s*(\d{1,3})\b|\b(\d{1,3})\s*ema\b", re.IGNORECASE)
-_SYMBOL = re.compile(r"\b(?:on|for|symbol)\s+\$?([A-Z][A-Z0-9./-]{0,19})\b", re.IGNORECASE)
+_SYMBOL = re.compile(r"\b(?:on|for|symbol)\s+\$?([A-Z][A-Z0-9.-]{0,14})\b", re.IGNORECASE)
 _TIMEFRAME = re.compile(r"\b(1|5|15)\s*(?:m|min|mins|minute|minutes)\b", re.IGNORECASE)
 
 
@@ -52,7 +52,8 @@ def parse_strategy(prompt: str) -> StrategySpec:
 
     return StrategySpec(
         name=f"EMA {fast}/{slow} crossover on {symbol}",
-        description=f"Long-only EMA crossover parsed from user text: {text}",
+        # The input is capped at 500 characters too, but keep the decorated description bounded.
+        description=(f"Long-only EMA crossover parsed from user text: {text}")[:500],
         symbol=symbol,
         timeframe=timeframe,
         fast_ema=fast,
