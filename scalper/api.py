@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
-from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -115,8 +114,6 @@ async def require_api_access(
             raise HTTPException(status_code=401, detail="Authentication required.")
         return
 
-    # Never trust loopback alone: a reverse proxy may make remote requests appear local,
-    # and a DNS-rebinding browser request still carries the attacker's Host header.
     if client_host in {"127.0.0.1", "::1", "localhost"} and _is_local_host_header(
         request.headers.get("host", "")
     ):
@@ -250,10 +247,8 @@ async def alpaca_paper_bars(symbol: str = "SPY", timeframe: str = "1Day", limit:
 async def alpaca_paper_order(request: PaperLimitOrderRequest) -> dict:
     try:
         broker = AlpacaPaperBroker()
-        client_order_id = request.client_order_id or f"scalper-{uuid4().hex[:32]}"
+        client_order_id = request.client_order_id
 
-        # Resolve a prior request before checking today's risk state. The stable key lets the
-        # browser safely retry after a timeout without accidentally submitting another order.
         existing = await broker.get_order_by_client_order_id(client_order_id)
         if existing:
             if not broker.order_matches(

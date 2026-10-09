@@ -130,3 +130,10 @@ def test_existing_idempotency_key_returns_same_order_before_risk_checks(client, 
     })
     assert response.status_code == 200
     assert response.json()["id"] == "existing-id"
+
+
+def test_order_submission_requires_stable_idempotency_key(client):
+    response = client.post("/api/brokers/alpaca/paper/orders", json={
+        "symbol": "SPY", "side": "buy", "quantity": 1, "limit_price": 100, "confirmed": True,
+    })
+    assert response.status_code == 422

@@ -87,10 +87,10 @@ class PaperLimitOrderRequest(StrictModel):
     quantity: float = Field(ge=0.000001, le=1000000, allow_inf_nan=False)
     limit_price: float = Field(ge=0.01, le=1000000, allow_inf_nan=False)
     confirmed: Literal[True]
-    client_order_id: str | None = Field(default=None, min_length=8, max_length=48)
+    client_order_id: str = Field(min_length=8, max_length=48)
 
     @model_validator(mode="after")
     def validate_client_order_id(self) -> PaperLimitOrderRequest:
-        if self.client_order_id and not re.fullmatch(r"[A-Za-z0-9._:-]{8,48}", self.client_order_id):
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{8,48}", self.client_order_id):
             raise ValueError("client_order_id contains unsupported characters")
         return self

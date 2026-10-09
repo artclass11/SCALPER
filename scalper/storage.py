@@ -59,13 +59,10 @@ def init_db() -> None:
                 action TEXT NOT NULL, strategy_id TEXT, detail_json TEXT NOT NULL DEFAULT '{}'
             )
         """)
-        _secure_database_files(database_path(), make_parent_private=make_parent_private_for_current_path())
-
-
-def make_parent_private_for_current_path() -> bool:
-    path = database_path()
-    configured = bool(os.getenv("SCALPER_DB_PATH", "").strip())
-    return not configured
+        _secure_database_files(
+            database_path(),
+            make_parent_private=not bool(os.getenv("SCALPER_DB_PATH", "").strip()),
+        )
 
 
 def _public(row: sqlite3.Row) -> dict:
