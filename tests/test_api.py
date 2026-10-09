@@ -9,6 +9,23 @@ def test_health_is_public_but_headers_are_hardened(client):
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
 
 
+def test_local_ui_is_served(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "SCALPER" in response.text
+    assert "Strategy Workbench" in response.text
+
+
+def test_remote_api_requires_bearer_token(client, monkeypatch):
+    monkeypatch.delenv("SCALPER_TEST_MODE", raising=False)
+    monkeypatch.delenv("SCALPER_API_TOKEN", raising=False)
+    assert client.get("/api/status").status_code == 403
+    monkeypatch.setenv("SCALPER_API_TOKEN", "unit-test-token")
+    assert client.get("/api/status").status_code == 401
+    response = client.get("/api/status", headers={"Authorization": "Bearer unit-test-token"})
+    assert response.status_code == 200
+
+
 def test_parse_endpoint_returns_validated_spec(client):
     response = client.post("/api/strategies/parse", json={"prompt": "EMA 9 above EMA 21 on SPY, 5 minute bars"})
     assert response.status_code == 200

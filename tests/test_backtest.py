@@ -41,3 +41,10 @@ def test_rejects_too_few_bars():
     spec = StrategySpec(name="Test EMA 2/4", symbol="SPY", fast_ema=2, slow_ema=4)
     with pytest.raises(ValueError, match="Provide at least"):
         run_backtest(spec, make_candles([1, 2, 3, 4, 5, 6, 7, 8, 9]))
+
+
+def test_rejects_non_chronological_candles():
+    spec = StrategySpec(name="Test EMA 2/4", symbol="SPY", fast_ema=2, slow_ema=4)
+    candles = make_candles([10, 9, 8, 7, 8, 9, 11, 12, 10, 8, 7, 6])
+    with pytest.raises(ValueError, match="chronological"):
+        run_backtest(spec, list(reversed(candles)))
