@@ -12,7 +12,11 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="SCALPER home"><span class="brand-mark">S</span><span>SCALPER</span></a>
-    <div class="top-actions"><span id="connection" class="status-dot">LOCAL ENGINE</span><button id="refresh" class="button button-quiet" type="button">Refresh</button></div>
+    <div class="top-actions">
+      <span id="connection" class="status-dot">LOCAL ENGINE</span>
+      <button id="api-access" class="button button-quiet" type="button" title="Enter a server token for a protected deployment">Unlock API</button>
+      <button id="refresh" class="button button-quiet" type="button">Refresh</button>
+    </div>
   </header>
   <main class="page">
     <section class="hero">
@@ -56,13 +60,14 @@
         <div id="account-results" class="account-results" aria-live="polite"></div>
         <div class="separator"></div><h3>Confirmed limit order</h3>
         <div class="form-grid">
-          <div><label for="order-symbol">Symbol</label><input id="order-symbol" value="SPY" maxlength="20"></div>
+          <div><label for="order-symbol">Symbol</label><input id="order-symbol" value="SPY" maxlength="15"></div>
           <div><label for="order-side">Side</label><select id="order-side"><option value="buy">Buy</option><option value="sell">Sell to close</option></select></div>
           <div><label for="order-qty">Quantity</label><input id="order-qty" type="number" value="1" min="0.000001" step="0.1"></div>
           <div><label for="order-price">Limit price</label><input id="order-price" type="number" value="100" min="0.01" step="0.01"></div>
         </div>
         <label class="checkline"><input id="order-confirm" type="checkbox"><span>I understand this submits an order to my Alpaca paper account.</span></label>
         <button id="submit-order" class="button button-warning" type="button">Submit paper limit order</button>
+        <button id="reset-order-retry" class="button button-quiet hidden" type="button">Reset pending retry</button>
         <div id="order-message" class="inline-message" role="status"></div>
       </section>
     </section>

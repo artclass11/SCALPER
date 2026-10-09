@@ -13,7 +13,13 @@ from scalper.brokers.alpaca_paper import AlpacaPaperBroker
 from scalper.config import alpaca_paper_configured, env_bool
 from scalper.risk import check_limit_order
 from scalper.schemas import StrategySpec
-from scalper.storage import init_db, list_strategies, update_processed_bar, update_strategy_error
+from scalper.storage import (
+    get_strategy,
+    init_db,
+    list_strategies,
+    update_processed_bar,
+    update_strategy_error,
+)
 
 
 def _frame_duration(frame: str) -> timedelta:
@@ -27,13 +33,12 @@ def _closed_bars(bars: list[dict], timeframe: str) -> list[dict]:
     duration = _frame_duration(timeframe)
     result = []
     for bar in bars:
-        stamp = None
         try:
             parsed = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
             stamp = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
         except (TypeError, ValueError, KeyError):
-            stamp = None
-        if stamp is not None and now >= stamp + duration + timedelta(seconds=3):
+            continue
+        if now >= stamp + duration + timedelta(seconds=3):
             result.append(bar)
     return result
 
@@ -65,8 +70,21 @@ async def process_strategy(item: dict) -> None:
     signal = _crossover([bar["close"] for bar in bars], spec.fast_ema, spec.slow_ema)
     account = await broker.get_account()
     position = await broker.get_position(spec.symbol)
+
+    # This strategy intentionally supports long-only stock positions. Never treat a short as
+    # flat, because a "sell" signal could otherwise increase a short position.
+    if position and position.get("side", "").lower() != "long":
+        update_strategy_error(item["id"], "UnsupportedPositionSide")
+        return
     position_qty = position["qty"] if position and position["qty"] > 0 else 0.0
     order = None
+
+    if signal in {"buy", "sell"}:
+        # Re-check the saved activation state just before order handling. A deactivation requested
+        # while market data was loading should prevent a stale strategy from placing an order.
+        current = get_strategy(item["id"])
+        if not current or not current["active"]:
+            return
 
     if signal == "buy" and position_qty <= 0 and not account["trading_blocked"]:
         equity = account["equity"]

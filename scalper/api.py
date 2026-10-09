@@ -8,7 +8,7 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +16,30 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from scalper.backtest import run_backtest
-from scalper.brokers.alpaca_paper import AlpacaPaperBroker, BrokerConfigurationError, BrokerRequestError
+from scalper.brokers.alpaca_paper import (
+    AlpacaPaperBroker,
+    BrokerConfigurationError,
+    BrokerOrderConflict,
+    BrokerRequestError,
+)
 from scalper.config import allowed_origins, alpaca_paper_configured, api_token, env_bool
 from scalper.risk import check_limit_order
-from scalper.schemas import ActivationRequest, BacktestRequest, PaperLimitOrderRequest, RiskCheckRequest, SaveStrategyRequest, StrategyPrompt
-from scalper.storage import delete_strategy, get_strategy, init_db, list_strategies, save_strategy, set_strategy_active
+from scalper.schemas import (
+    ActivationRequest,
+    BacktestRequest,
+    PaperLimitOrderRequest,
+    RiskCheckRequest,
+    SaveStrategyRequest,
+    StrategyPrompt,
+)
+from scalper.storage import (
+    delete_strategy,
+    get_strategy,
+    init_db,
+    list_strategies,
+    save_strategy,
+    set_strategy_active,
+)
 from scalper.strategy import UnsupportedStrategy, parse_strategy
 
 WEB_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "web"
@@ -32,8 +51,10 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="SCALPER", version="0.1.0", docs_url=None, redoc_url=None,
-              openapi_url="/api/openapi.json", lifespan=lifespan)
+app = FastAPI(
+    title="SCALPER", version="0.1.0", docs_url=None, redoc_url=None,
+    openapi_url="/api/openapi.json", lifespan=lifespan,
+)
 
 
 class SecurityHeadersMiddleware:
@@ -41,6 +62,12 @@ class SecurityHeadersMiddleware:
         self.inner_app = inner_app
 
     async def __call__(self, scope, receive, send):
+        # ASGI lifespan/websocket messages are not HTTP responses; never mutate
+        # protocol messages by adding HTTP response headers to them.
+        if scope.get("type") != "http":
+            await self.inner_app(scope, receive, send)
+            return
+
         async def send_with_headers(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
@@ -57,31 +84,52 @@ class SecurityHeadersMiddleware:
                     headers.append((b"cache-control", b"no-store"))
                 message["headers"] = headers
             await send(message)
+
         await self.inner_app(scope, receive, send_with_headers)
 
 
 app.add_middleware(SecurityHeadersMiddleware)
 origins = allowed_origins()
 if origins:
-    app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
-                       allow_methods=["GET", "POST", "DELETE"], allow_headers=["Authorization", "Content-Type"],
-                       max_age=300)
+    app.add_middleware(
+        CORSMiddleware, allow_origins=origins, allow_credentials=False,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type"], max_age=300,
+    )
 
 
-async def require_api_access(request: Request, authorization: str | None = Header(default=None)) -> None:
+def _is_local_host_header(host_header: str) -> bool:
+    try:
+        host = urlsplit("//" + host_header).hostname
+    except ValueError:
+        return False
+    return host is not None and host.lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+async def require_api_access(
+    request: Request, authorization: str | None = Header(default=None)
+) -> None:
     client_host = request.client.host if request.client else ""
-    if client_host in {"127.0.0.1", "::1", "localhost"}:
-        return
     if env_bool("SCALPER_TEST_MODE") and client_host == "testclient":
         return
+
     configured_token = api_token()
-    supplied = authorization or ""
-    if configured_token and supplied.startswith("Bearer ") and hmac.compare_digest(
-        supplied.removeprefix("Bearer ").strip(), configured_token
+    if configured_token:
+        supplied = authorization or ""
+        if not supplied.startswith("Bearer ") or not hmac.compare_digest(
+            supplied.removeprefix("Bearer ").strip(), configured_token
+        ):
+            raise HTTPException(status_code=401, detail="Authentication required.")
+        return
+
+    if client_host in {"127.0.0.1", "::1", "localhost"} and _is_local_host_header(
+        request.headers.get("host", "")
     ):
         return
-    raise HTTPException(status_code=401 if configured_token else 403,
-                        detail="Remote API access is disabled or authentication is required.")
+    raise HTTPException(
+        status_code=403,
+        detail="Remote API access is disabled. Configure a strong SCALPER_API_TOKEN and secure gateway.",
+    )
 
 
 @app.get("/api/health")
@@ -160,9 +208,11 @@ async def remove_strategy(strategy_id: str) -> dict[str, bool]:
 @app.post("/api/backtests/run", dependencies=[Depends(require_api_access)])
 async def backtest(request: BacktestRequest) -> dict:
     try:
-        return run_backtest(spec=request.spec, candles=request.candles, starting_cash=request.starting_cash,
-                            position_fraction=request.position_fraction, fee_bps=request.fee_bps,
-                            slippage_bps=request.slippage_bps)
+        return run_backtest(
+            spec=request.spec, candles=request.candles, starting_cash=request.starting_cash,
+            position_fraction=request.position_fraction, fee_bps=request.fee_bps,
+            slippage_bps=request.slippage_bps,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -170,9 +220,9 @@ async def backtest(request: BacktestRequest) -> dict:
 @app.post("/api/risk/check", dependencies=[Depends(require_api_access)])
 async def risk_check(request: RiskCheckRequest) -> dict:
     return check_limit_order(
-        symbol=request.symbol, side=request.side, quantity=request.quantity, limit_price=request.limit_price,
-        account_equity=request.account_equity, daily_pnl_pct=request.daily_pnl_pct,
-        reduce_only=request.reduce_only,
+        symbol=request.symbol, side=request.side, quantity=request.quantity,
+        limit_price=request.limit_price, account_equity=request.account_equity,
+        daily_pnl_pct=request.daily_pnl_pct, reduce_only=request.reduce_only,
     ).as_dict()
 
 
@@ -190,8 +240,10 @@ async def alpaca_paper_account() -> dict:
 async def alpaca_paper_bars(symbol: str = "SPY", timeframe: str = "1Day", limit: int = 100) -> list[dict]:
     from scalper.schemas import StrategySpec
     try:
-        spec = StrategySpec(name="Read-only market bars", symbol=symbol.upper(), timeframe=timeframe,
-                            fast_ema=9, slow_ema=21)
+        spec = StrategySpec(
+            name="Read-only market bars", symbol=symbol.upper(), timeframe=timeframe,
+            fast_ema=9, slow_ema=21,
+        )
         return await AlpacaPaperBroker().get_bars(spec, limit=limit)
     except (BrokerConfigurationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -203,6 +255,17 @@ async def alpaca_paper_bars(symbol: str = "SPY", timeframe: str = "1Day", limit:
 async def alpaca_paper_order(request: PaperLimitOrderRequest) -> dict:
     try:
         broker = AlpacaPaperBroker()
+        client_order_id = request.client_order_id
+
+        existing = await broker.get_order_by_client_order_id(client_order_id)
+        if existing:
+            if not broker.order_matches(
+                existing, symbol=request.symbol, side=request.side,
+                quantity=request.quantity, limit_price=request.limit_price,
+            ):
+                raise HTTPException(status_code=409, detail="This client order id belongs to a different order.")
+            return existing
+
         account = await broker.get_account()
         if account["trading_blocked"]:
             raise HTTPException(status_code=409, detail="Alpaca reports that trading is blocked.")
@@ -212,23 +275,30 @@ async def alpaca_paper_order(request: PaperLimitOrderRequest) -> dict:
         reduce_only = False
         if request.side == "sell":
             position = await broker.get_position(request.symbol)
-            if not position or position["qty"] <= 0 or request.quantity > position["qty"]:
+            if (
+                not position
+                or position["side"] != "long"
+                or position["qty"] <= 0
+                or request.quantity > position["qty"]
+            ):
                 raise HTTPException(status_code=422, detail="Sells may only reduce an existing long paper position.")
             reduce_only = True
         decision = check_limit_order(
-            symbol=request.symbol, side=request.side, quantity=request.quantity, limit_price=request.limit_price,
-            account_equity=equity, daily_pnl_pct=daily_pnl, reduce_only=reduce_only,
+            symbol=request.symbol, side=request.side, quantity=request.quantity,
+            limit_price=request.limit_price, account_equity=equity,
+            daily_pnl_pct=daily_pnl, reduce_only=reduce_only,
         )
         if not decision.approved:
             raise HTTPException(status_code=422, detail={"risk_rejected": list(decision.reasons)})
-        order_id = request.client_order_id or f"scalper-{uuid4().hex[:32]}"
         return await broker.submit_limit_order(
             symbol=request.symbol, side=request.side, quantity=request.quantity,
-            limit_price=request.limit_price, client_order_id=order_id,
+            limit_price=request.limit_price, client_order_id=client_order_id,
         )
     except HTTPException:
         raise
     except BrokerConfigurationError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except BrokerOrderConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except BrokerRequestError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

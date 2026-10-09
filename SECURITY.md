@@ -4,12 +4,14 @@ Do not publish an exploit or include broker credentials, account identifiers, pe
 
 ## Safety boundaries
 
-- The included adapter is hard-wired to Alpaca's paper API host.
-- Live-trading endpoints and live order code are not part of this release.
-- The API binds to loopback by default and denies non-loopback requests when no bearer token is configured.
-- Secrets must be provided by environment or a secret manager; never log them, commit them or put them in prompts.
+- The broker adapter is fixed to Alpaca's paper trading host; no live-order route is included.
+- The default server bind is loopback-only.
+- When SCALPER_API_TOKEN is configured, every protected API request must present it, including requests that arrive from localhost through a reverse proxy.
+- Never expose the local server through a reverse proxy without setting a long random SCALPER_API_TOKEN and configuring TLS/access controls at the gateway.
+- Credentials must be provided by environment or a secret manager; never log them, commit them or put them in prompts.
 - AI parser output is a validated strategy schema. Arbitrary generated code is never run.
-- Kill switch and order-size checks are defense-in-depth, not guarantees against every trading loss.
+- Client order IDs and broker reconciliation help prevent duplicate orders after timeouts, but do not replace operational monitoring or reconciliation.
+- Risk checks are defense-in-depth, not guarantees against every trading loss.
 
 ## Before production use
 

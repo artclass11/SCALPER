@@ -1,13 +1,13 @@
 const $ = (id) => document.getElementById(id);
 let currentSpec = null;
 let loadedCandles = [];
+let apiToken = "";
+let pendingOrder = null;
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    cache: "no-store",
-  });
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (apiToken) headers.Authorization = "Bearer " + apiToken;
+  const response = await fetch(path, { ...options, headers, cache: "no-store" });
   let body = {};
   try { body = await response.json(); } catch (_) { body = {}; }
   if (!response.ok) {
@@ -26,6 +26,11 @@ function number(value, digits = 2) {
   return Number.isFinite(result) ? result.toLocaleString(undefined, { maximumFractionDigits: digits }) : "—";
 }
 function show(id, visible) { $(id).classList.toggle("hidden", !visible); }
+function newClientOrderId() {
+  const randomPart = globalThis.crypto?.randomUUID?.().replaceAll("-", "").slice(0, 32)
+    || (Date.now().toString(36) + Math.random().toString(36).slice(2, 16));
+  return "scalper-ui-" + randomPart;
+}
 
 function renderSpec(spec) {
   currentSpec = spec;
@@ -92,18 +97,19 @@ function parseCsv(text) {
   for (const name of ["timestamp", "open", "high", "low", "close"]) {
     if (idx(name) < 0) throw new Error("Missing CSV column: " + name);
   }
-  return lines.slice(1).map((line) => {
+  const candles = lines.slice(1).map((line) => {
     const cells = line.split(",").map((x) => x.trim());
     const date = new Date(cells[idx("timestamp")]);
     const values = ["open", "high", "low", "close"].map((key) => Number(cells[idx(key)]));
-    if (Number.isNaN(date.getTime()) || values.some((value) => !Number.isFinite(value))) {
+    const volume = idx("volume") < 0 ? 0 : Number(cells[idx("volume")] || 0);
+    if (Number.isNaN(date.getTime()) || values.some((value) => !Number.isFinite(value)) || !Number.isFinite(volume)) {
       throw new Error("CSV has an invalid timestamp or numeric candle value.");
     }
-    return {
-      timestamp: date.toISOString(), open: values[0], high: values[1], low: values[2], close: values[3],
-      volume: idx("volume") < 0 ? 0 : Number(cells[idx("volume")] || 0),
-    };
+    return { timestamp: date.toISOString(), open: values[0], high: values[1], low: values[2],
+      close: values[3], volume };
   });
+  if (candles.length > 10000) throw new Error("CSV may contain no more than 10,000 rows.");
+  return candles;
 }
 $("csv-file").addEventListener("change", async (event) => {
   const file = event.target.files && event.target.files[0];
@@ -113,7 +119,6 @@ $("csv-file").addEventListener("change", async (event) => {
   try {
     if (file.size > 5 * 1024 * 1024) throw new Error("CSV files must be 5 MB or smaller.");
     loadedCandles = parseCsv(await file.text());
-    if (loadedCandles.length > 10000) throw new Error("CSV may contain no more than 10,000 rows.");
     $("backtest").disabled = !currentSpec;
     message("backtest-message", loadedCandles.length + " candles loaded locally.", "success");
   } catch (error) {
@@ -194,9 +199,9 @@ async function loadStatus() {
     $("broker-status").textContent = status.alpaca_paper_configured ? "Configured" : "Not connected";
     $("automation-status").textContent = status.automation_enabled ? "Enabled" : "Off";
     $("connection").textContent = "LOCAL ENGINE ONLINE";
-  } catch (_) {
-    $("engine-status").textContent = "Unavailable";
-    $("connection").textContent = "API UNAVAILABLE";
+  } catch (error) {
+    $("engine-status").textContent = error.message.includes("Authentication") ? "Access required" : "Unavailable";
+    $("connection").textContent = error.message.includes("Authentication") ? "API LOCKED" : "API UNAVAILABLE";
   }
 }
 async function loadAccount() {
@@ -224,16 +229,42 @@ async function submitPaperOrder() {
     message("order-message", "Confirm that this is a paper-account order first.", "error");
     return;
   }
-  const body = { symbol: $("order-symbol").value.trim().toUpperCase(), side: $("order-side").value,
-    quantity: Number($("order-qty").value), limit_price: Number($("order-price").value), confirmed: true };
-  if (!window.confirm("Submit this limit order to the Alpaca PAPER account? No live order route exists in this build.")) return;
+  const entered = {
+    symbol: $("order-symbol").value.trim().toUpperCase(),
+    side: $("order-side").value,
+    quantity: Number($("order-qty").value),
+    limit_price: Number($("order-price").value),
+    confirmed: true,
+  };
+  if (!pendingOrder) pendingOrder = { ...entered, client_order_id: newClientOrderId() };
+  else {
+    const priorFields = { symbol: pendingOrder.symbol, side: pendingOrder.side, quantity: pendingOrder.quantity,
+      limit_price: pendingOrder.limit_price, confirmed: pendingOrder.confirmed };
+    if (JSON.stringify(entered) !== JSON.stringify(priorFields)) {
+      message("order-message", "A prior submission is unresolved. Retry the same order or reset its key after checking the broker.", "error");
+      return;
+    }
+  }
+  if (!window.confirm("Submit/retry this exact limit order in the Alpaca PAPER account? The same client order ID is reused to avoid duplicate orders.")) return;
   $("submit-order").disabled = true;
+  show("reset-order-retry", true);
   try {
-    const order = await api("/api/brokers/alpaca/paper/orders", { method: "POST", body: JSON.stringify(body) });
-    message("order-message", "Paper order accepted: " + order.status + " · " + order.symbol + " · ID " + order.id, "success");
-  } catch (error) { message("order-message", error.message, "error"); }
-  finally { $("submit-order").disabled = false; }
+    const order = await api("/api/brokers/alpaca/paper/orders", {
+      method: "POST", body: JSON.stringify(pendingOrder),
+    });
+    message("order-message", "Paper order confirmed by broker: " + order.status + " · " + order.symbol + " · ID " + order.id, "success");
+    pendingOrder = null;
+    show("reset-order-retry", false);
+  } catch (error) {
+    message("order-message", error.message + " Your retry key is retained to help avoid duplicate orders.", "error");
+  } finally { $("submit-order").disabled = false; }
 }
+$("reset-order-retry").addEventListener("click", () => {
+  if (!window.confirm("Only reset after checking Alpaca and confirming the earlier request did not place an order. Resetting does not cancel any broker order.")) return;
+  pendingOrder = null;
+  show("reset-order-retry", false);
+  message("order-message", "Pending retry key cleared. Verify the broker before submitting again.");
+});
 async function mutateStrategy(id, action) {
   if (action === "activate" && !window.confirm("Activate paper automation? The worker may submit limit orders while you are away.")) return;
   try {
@@ -304,6 +335,21 @@ async function loadStrategies() {
     target.append(empty);
   }
 }
+async function unlockApi() {
+  const value = window.prompt("Enter the SCALPER_API_TOKEN for this protected deployment. It is kept in memory only for this tab.");
+  if (value === null || !value.trim()) return;
+  apiToken = value.trim();
+  try {
+    await api("/api/status");
+    $("api-access").textContent = "API unlocked";
+    await loadStatus();
+    await loadStrategies();
+  } catch (error) {
+    apiToken = "";
+    window.alert("Could not authorize SCALPER: " + error.message);
+  }
+}
+$("api-access").addEventListener("click", unlockApi);
 $("parse").addEventListener("click", buildStrategy);
 $("backtest").addEventListener("click", runBacktest);
 $("account").addEventListener("click", loadAccount);

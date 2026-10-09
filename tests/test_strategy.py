@@ -1,5 +1,7 @@
 import pytest
+from pydantic import ValidationError
 
+from scalper.schemas import StrategySpec
 from scalper.strategy import UnsupportedStrategy, parse_strategy
 
 
@@ -32,3 +34,16 @@ def test_lowercase_symbol_is_normalized():
 def test_prompt_length_is_bounded():
     with pytest.raises(UnsupportedStrategy):
         parse_strategy("EMA " + "1" * 600)
+
+
+def test_maximum_length_prompt_does_not_crash_with_validation_error():
+    base = "EMA 9 crosses above EMA 21 on SPY "
+    prompt = base + ("x" * (500 - len(base)))
+    spec = parse_strategy(prompt)
+    assert len(spec.description) <= 500
+
+
+@pytest.mark.parametrize("symbol", ["../account", "/orders", "SPY/../account", "A B", "$SPY"])
+def test_strategy_schema_rejects_path_and_non_symbol_input(symbol):
+    with pytest.raises(ValidationError):
+        StrategySpec(name="Bad symbol", symbol=symbol, fast_ema=9, slow_ema=21)
