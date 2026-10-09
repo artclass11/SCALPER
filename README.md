@@ -1,8 +1,8 @@
 # SCALPER
 
-SCALPER is a clean-room, privacy-first algorithmic trading workbench. This foundation release provides a minimal black PWA, constrained natural-language strategy creation, reproducible EMA-crossover backtests, local saved strategies, risk checks, an Alpaca paper-only adapter, optional local Ollama parsing, and MCP tools for compatible AI clients.
+SCALPER is a clean-room, privacy-first algorithmic trading workbench. This release provides a minimal black PWA, constrained natural-language strategy creation, reproducible EMA-crossover backtests, local saved strategies, risk checks, an Alpaca paper-only adapter, optional local Ollama parsing, and MCP tools for compatible AI clients.
 
-This is an early foundation release, not a claim of institutional production readiness. Live-money orders, multi-user SaaS authentication, tenant isolation, and additional broker live execution are not enabled. Do not expose this single-user build directly to the public internet.
+This is a foundation release, not a claim of institutional production readiness. Live-money orders, multi-user SaaS authentication, tenant isolation, and additional broker live execution are not enabled. Do not expose this single-user build directly to the public internet.
 
 ## Features
 
@@ -12,9 +12,10 @@ This is an early foundation release, not a claim of institutional production rea
 - SQLite strategy registry. Strategies are inactive when saved.
 - Opt-in separate paper worker; it can continue when the phone is off if the host and worker remain running.
 - Alpaca account, market bars, positions and limit orders, hard-wired to the paper trading host.
+- Stable client order IDs and reconciliation after uncertain broker responses to lower duplicate-order risk on retries.
 - Optional Ollama-local parsing; no model weights are bundled. Check model-specific licenses.
 - MCP tools for strategy specs, backtesting and listing saved strategies. MCP exposes no order-submission tool.
-- Loopback-only defaults, optional bearer-token protection, security headers, CI and security workflows, and Windows packaging workflow.
+- Loopback defaults, protected API token support, security headers, CI/CodeQL/Dependabot workflows and Windows packaging configuration.
 
 ## Quick start
 
@@ -45,6 +46,18 @@ Create paper credentials in your Alpaca account and set them only in the server 
 
 Credentials are never accepted from browser fields and are not persisted to SQLite. The adapter uses the official paper-trading host only. The manual order route accepts limit orders only, requires confirmation and risk checks, and permits sells only to reduce an existing long position. Market-data terms, eligibility, supported assets and fill behavior remain subject to Alpaca's terms and service.
 
+## Protected and cloud deployments
+
+For every reverse-proxy, LAN or public gateway deployment, configure a strong random token of at least 32 characters before exposing the service:
+
+    # Linux/macOS
+    export SCALPER_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(40))')"
+    scalper --host 0.0.0.0
+
+The browser UI has an Unlock API action. It keeps the bearer token in memory only for the current tab and does not write it into browser storage. Set TLS and access controls at the gateway too. Do not reuse one token across multiple SaaS customers; this release has no user identity or tenant isolation.
+
+The API also checks the Host header when operating without a configured token to reduce common reverse-proxy and DNS-rebinding exposures. This is defense-in-depth, not an alternative to a token for any proxy deployment. The CLI refuses non-loopback binds unless the token is at least 32 characters.
+
 ## Paper automation when the phone is off
 
 The worker is a separate process and is disabled unless explicitly enabled. Set this environment variable for both API and worker, configure paper credentials, and restart the processes.
@@ -53,8 +66,6 @@ The worker is a separate process and is disabled unless explicitly enabled. Set 
     scalper-worker
 
 The UI requires explicit confirmation before activation. The worker reads persisted strategies and sends only paper limit orders. Keep the host, worker, database and broker connection running. Turning off the phone does not stop server-side automation; stopping the host or worker does. This foundation worker is not a high-availability scheduler and does not provide exchange-grade order/fill reconciliation. Review paper activity before relying on it.
-
-For deployments beyond a trusted local machine, add a private network, a secret manager, backups, monitoring, and a secure gateway. Binding to a non-loopback interface requires SCALPER_API_TOKEN. Do not expose this version as a multi-user public SaaS: it has no user identity or tenant isolation, and one bearer token is not a SaaS authorization system.
 
 ## Optional local AI
 
@@ -74,7 +85,7 @@ The Windows build is configured in packaging/scalper.spec and the manual GitHub 
     bandit -q -r scalper
     pip-audit
 
-CI runs lint, tests, security lint and dependency auditing. No CI test submits a broker order.
+CI runs lint, unit and API tests, Bandit and dependency auditing; CodeQL analyzes the Python code. No CI test submits a broker order.
 
 ## Copyright and commercial use
 
