@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -22,11 +23,10 @@ def test_broker_fails_closed_without_paper_credentials(monkeypatch):
 
 
 def test_symbols_cannot_escape_api_path():
+    broker = object.__new__(AlpacaPaperBroker)
     for symbol in ("../account", "/orders", "SPY/../account", "A B", "$SPY"):
-        with pytest.raises(ValueError):
-            AlpacaPaperBroker.get_position  # access checks happen before any HTTP call
-            import re
-            assert re.fullmatch(r"^[A-Z][A-Z0-9.-]{0,14}$", symbol)
+        with pytest.raises(ValueError, match="Invalid stock symbol"):
+            asyncio.run(broker.get_position(symbol))
 
 
 def test_order_id_conflict_is_a_specific_broker_error():
