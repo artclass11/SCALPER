@@ -1,0 +1,67 @@
+openapi: 3.1.0
+info:
+  title: SCALPER Strategy API
+  version: 0.1.0
+  description: Strategy parsing and historical backtesting endpoints. Live trading is not exposed.
+servers:
+  - url: https://YOUR_AUTHENTICATED_GATEWAY.example.com
+security:
+  - bearerAuth: []
+paths:
+  /api/health:
+    get:
+      operationId: health
+      security: []
+      summary: Check service health
+      responses:
+        "200":
+          description: Service status
+  /api/strategies/parse:
+    post:
+      operationId: parseStrategy
+      summary: Parse a plain-language EMA crossover strategy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+                  minLength: 3
+                  maxLength: 500
+      responses:
+        "200":
+          description: Validated strategy specification
+        "422":
+          description: Unsupported strategy or invalid prompt
+  /api/backtests/run:
+    post:
+      operationId: runBacktest
+      summary: Backtest a validated strategy against supplied candles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spec, candles]
+              properties:
+                spec:
+                  type: object
+                candles:
+                  type: array
+                  minItems: 10
+                  maxItems: 10000
+      responses:
+        "200":
+          description: Simulation metrics and trade ledger
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: token
