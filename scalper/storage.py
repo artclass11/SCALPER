@@ -7,6 +7,7 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 from scalper.config import database_path
 from scalper.schemas import StrategySpec
@@ -16,14 +17,26 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _secure_database_files(path: Path, *, make_parent_private: bool) -> None:
+    if os.name == "nt":
+        return
+    if make_parent_private:
+        os.chmod(path.parent, 0o700)
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        if candidate.exists():
+            os.chmod(candidate, 0o600)
+
+
 def _connect() -> sqlite3.Connection:
     path = database_path()
+    configured_path = bool(os.getenv("SCALPER_DB_PATH", "").strip())
+    parent_existed = path.parent.exists()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if os.name != "nt":
-        os.chmod(path.parent, 0o700)
+    # Only force permissions on SCALPER's own default data directory, or a directory
+    # this invocation has just created. Never chmod an arbitrary existing user directory.
+    make_parent_private = not configured_path or not parent_existed
     conn = sqlite3.connect(path, timeout=10)
-    if os.name != "nt":
-        os.chmod(path, 0o600)
+    _secure_database_files(path, make_parent_private=make_parent_private)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=10000")
@@ -46,6 +59,13 @@ def init_db() -> None:
                 action TEXT NOT NULL, strategy_id TEXT, detail_json TEXT NOT NULL DEFAULT '{}'
             )
         """)
+        _secure_database_files(database_path(), make_parent_private=make_parent_private_for_current_path())
+
+
+def make_parent_private_for_current_path() -> bool:
+    path = database_path()
+    configured = bool(os.getenv("SCALPER_DB_PATH", "").strip())
+    return not configured
 
 
 def _public(row: sqlite3.Row) -> dict:
@@ -80,10 +100,10 @@ def save_strategy(name: str, spec: StrategySpec) -> dict:
 
 def list_strategies(active_only: bool = False) -> list[dict]:
     init_db()
-    if active_only:
-        query = "SELECT * FROM strategies WHERE active = 1 ORDER BY created_at DESC"
-    else:
-        query = "SELECT * FROM strategies ORDER BY created_at DESC"
+    query = (
+        "SELECT * FROM strategies WHERE active = 1 ORDER BY created_at DESC"
+        if active_only else "SELECT * FROM strategies ORDER BY created_at DESC"
+    )
     with _connect() as conn:
         rows = conn.execute(query).fetchall()
     return [_public(row) for row in rows]
@@ -132,8 +152,11 @@ def update_processed_bar(strategy_id: str, bar_timestamp: str) -> None:
 
 def update_strategy_error(strategy_id: str, error_code: str) -> None:
     init_db()
-    # Save only the exception class, never a request body, broker payload or secret.
+    # Avoid flooding the audit log if a worker keeps encountering the same persistent error.
     with _connect() as conn:
+        row = conn.execute("SELECT last_error FROM strategies WHERE id = ?", (strategy_id,)).fetchone()
+        if row is None or row["last_error"] == error_code[:80]:
+            return
         conn.execute(
             "UPDATE strategies SET last_error = ?, updated_at = ? WHERE id = ?",
             (error_code[:80], _now(), strategy_id),
