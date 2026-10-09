@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#050505">
+  <meta name="description" content="SCALPER privacy-first algorithmic trading workbench">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/styles.css">
+  <title>SCALPER — Strategy Workbench</title>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="SCALPER home"><span class="brand-mark">S</span><span>SCALPER</span></a>
+    <div class="top-actions"><span id="connection" class="status-dot">LOCAL ENGINE</span><button id="refresh" class="button button-quiet" type="button">Refresh</button></div>
+  </header>
+  <main class="page">
+    <section class="hero">
+      <div class="eyebrow">PRIVATE BY DEFAULT · PAPER-FIRST</div>
+      <h1>Think in strategies.<br><span>Test before you trade.</span></h1>
+      <p>Describe a rule in plain language. SCALPER turns it into a constrained strategy, backtests it with costs, and keeps saved strategies on this machine.</p>
+    </section>
+    <section class="status-grid" aria-label="System status">
+      <div class="status-card"><span>ENGINE</span><strong id="engine-status">Checking</strong><small>Local strategy and risk engine</small></div>
+      <div class="status-card"><span>ALPACA PAPER</span><strong id="broker-status">Not connected</strong><small>Credentials remain server-side</small></div>
+      <div class="status-card"><span>AUTOMATION</span><strong id="automation-status">Off</strong><small>Separate worker process required</small></div>
+      <div class="status-card"><span>LIVE TRADING</span><strong class="muted">Disabled</strong><small>No live-order route in this build</small></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><div><div class="eyebrow">01 / STRATEGY BUILDER</div><h2>Describe the rule</h2></div><span class="panel-index">01</span></div>
+      <label for="prompt">Strategy prompt</label>
+      <textarea id="prompt" rows="3" maxlength="500">Use EMA 9 crossing above EMA 21 on SPY, 5 minute bars</textarea>
+      <div class="helper">Supported in this release: long-only EMA crossovers. Unsupported indicators are rejected. AI output is never executed as code.</div>
+      <div class="button-row"><button id="parse" class="button button-primary" type="button">Build strategy</button><span id="builder-message" class="inline-message" role="status"></span></div>
+      <div id="spec-preview" class="spec-preview hidden" aria-live="polite"></div>
+    </section>
+    <section class="two-col">
+      <section class="panel">
+        <div class="panel-head"><div><div class="eyebrow">02 / BACKTEST</div><h2>Test the idea</h2></div><span class="panel-index">02</span></div>
+        <p class="muted-copy">Upload a CSV with timestamp, open, high, low, close, and optional volume columns. The simulation uses the next bar's open, fees, and slippage.</p>
+        <label class="file-picker" for="csv-file"><span>Choose OHLCV CSV</span><input id="csv-file" type="file" accept=".csv,text/csv"></label>
+        <div class="form-grid">
+          <div><label for="cash">Starting cash</label><input id="cash" type="number" value="100000" min="100" step="1000"></div>
+          <div><label for="allocation">Position size (%)</label><input id="allocation" type="number" value="10" min="1" max="50" step="1"></div>
+          <div><label for="fees">Fees (bps/side)</label><input id="fees" type="number" value="1" min="0" max="100" step="0.5"></div>
+          <div><label for="slippage">Slippage (bps/side)</label><input id="slippage" type="number" value="1" min="0" max="100" step="0.5"></div>
+        </div>
+        <button id="backtest" class="button button-primary" type="button" disabled>Run backtest</button>
+        <div id="backtest-message" class="inline-message" role="status"></div>
+        <div id="backtest-results" class="results hidden"></div>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><div><div class="eyebrow">03 / PAPER ACCOUNT</div><h2>Broker connection</h2></div><span class="panel-index">03</span></div>
+        <p class="muted-copy">Connect from the server environment. This UI never asks for your broker API key or secret.</p>
+        <button id="account" class="button button-secondary" type="button">Check Alpaca paper account</button>
+        <div id="account-results" class="account-results" aria-live="polite"></div>
+        <div class="separator"></div><h3>Confirmed limit order</h3>
+        <div class="form-grid">
+          <div><label for="order-symbol">Symbol</label><input id="order-symbol" value="SPY" maxlength="20"></div>
+          <div><label for="order-side">Side</label><select id="order-side"><option value="buy">Buy</option><option value="sell">Sell to close</option></select></div>
+          <div><label for="order-qty">Quantity</label><input id="order-qty" type="number" value="1" min="0.000001" step="0.1"></div>
+          <div><label for="order-price">Limit price</label><input id="order-price" type="number" value="100" min="0.01" step="0.01"></div>
+        </div>
+        <label class="checkline"><input id="order-confirm" type="checkbox"><span>I understand this submits an order to my Alpaca paper account.</span></label>
+        <button id="submit-order" class="button button-warning" type="button">Submit paper limit order</button>
+        <div id="order-message" class="inline-message" role="status"></div>
+      </section>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><div><div class="eyebrow">04 / STRATEGY LIBRARY</div><h2>Saved strategies</h2></div><button id="reload-strategies" class="button button-quiet" type="button">Reload</button></div>
+      <p class="muted-copy">Strategies start inactive. Paper automation requires confirmation, paper credentials, the automation flag, and a separate worker.</p>
+      <div id="strategy-list" class="strategy-list"><div class="empty-state">No strategies saved yet.</div></div>
+    </section>
+    <footer class="footer"><span>SCALPER 0.1.0</span><span>Local-first · No telemetry · Paper-only execution</span><a href="https://github.com/artclass11/SCALPER" rel="noreferrer">Source code</a></footer>
+  </main>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
