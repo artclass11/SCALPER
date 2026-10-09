@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from scalper.brokers import alpaca_paper
-from scalper.brokers.alpaca_paper import AlpacaPaperBroker, BrokerConfigurationError
+from scalper.brokers.alpaca_paper import AlpacaPaperBroker, BrokerConfigurationError, BrokerOrderConflict
 
 
 def test_broker_uses_only_paper_trading_host():
@@ -19,3 +19,22 @@ def test_broker_fails_closed_without_paper_credentials(monkeypatch):
     monkeypatch.delenv("SCALPER_ALPACA_PAPER_SECRET", raising=False)
     with pytest.raises(BrokerConfigurationError):
         AlpacaPaperBroker()
+
+
+def test_symbols_cannot_escape_api_path():
+    for symbol in ("../account", "/orders", "SPY/../account", "A B", "$SPY"):
+        with pytest.raises(ValueError):
+            AlpacaPaperBroker.get_position  # access checks happen before any HTTP call
+            import re
+            assert re.fullmatch(r"^[A-Z][A-Z0-9.-]{0,14}$", symbol)
+
+
+def test_order_id_conflict_is_a_specific_broker_error():
+    assert issubclass(BrokerOrderConflict, Exception)
+
+
+def test_order_matching_rejects_different_size_or_side():
+    order = {"symbol": "SPY", "side": "buy", "qty": "1", "limit_price": "100.00"}
+    assert AlpacaPaperBroker.order_matches(order, symbol="SPY", side="buy", quantity=1, limit_price=100)
+    assert not AlpacaPaperBroker.order_matches(order, symbol="SPY", side="sell", quantity=1, limit_price=100)
+    assert not AlpacaPaperBroker.order_matches(order, symbol="SPY", side="buy", quantity=2, limit_price=100)

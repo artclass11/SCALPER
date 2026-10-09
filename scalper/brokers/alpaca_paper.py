@@ -1,17 +1,21 @@
-"""Alpaca adapter with fixed paper trading host and limit orders only."""
+"""Alpaca adapter fixed to the paper trading host, with idempotent limit orders."""
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
-from scalper.schemas import StrategySpec
+from scalper.schemas import Candle, StrategySpec
 
 PAPER_TRADING_URL = "https://paper-api.alpaca.markets"
 MARKET_DATA_URL = "https://data.alpaca.markets"
+_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.-]{0,14}$")
+_ORDER_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{8,48}$")
 
 
 class BrokerConfigurationError(RuntimeError):
@@ -20,6 +24,39 @@ class BrokerConfigurationError(RuntimeError):
 
 class BrokerRequestError(RuntimeError):
     pass
+
+
+class BrokerOrderConflict(BrokerRequestError):
+    """The requested idempotency key already identifies a different order."""
+
+
+def _number(value: Any, field: str, *, allow_negative: bool = False) -> float:
+    if isinstance(value, bool):
+        raise BrokerRequestError(f"Alpaca returned an invalid {field} value.")
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise BrokerRequestError(f"Alpaca returned an invalid {field} value.") from exc
+    if not math.isfinite(result) or (not allow_negative and result < 0):
+        raise BrokerRequestError(f"Alpaca returned an invalid {field} value.")
+    return result
+
+
+def _order_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise BrokerRequestError("Alpaca returned an invalid order payload.")
+    required = ("id", "client_order_id", "symbol", "side", "qty", "limit_price", "status")
+    if any(key not in payload for key in required):
+        raise BrokerRequestError("Alpaca returned an incomplete order payload.")
+    return {
+        "id": str(payload["id"]),
+        "client_order_id": str(payload["client_order_id"]),
+        "symbol": str(payload["symbol"]),
+        "side": str(payload["side"]),
+        "qty": str(payload["qty"]),
+        "limit_price": str(payload["limit_price"]),
+        "status": str(payload["status"]),
+    }
 
 
 class AlpacaPaperBroker:
@@ -40,6 +77,9 @@ class AlpacaPaperBroker:
         self, *, base_url: str, method: str, path: str,
         params: dict | None = None, json_body: dict | None = None, not_found_is_none: bool = False,
     ) -> Any:
+        # Callers can only select the two constants in this module; redirects are explicitly disabled.
+        if base_url not in {PAPER_TRADING_URL, MARKET_DATA_URL}:
+            raise BrokerRequestError("Rejected unapproved broker API host.")
         try:
             async with httpx.AsyncClient(
                 base_url=base_url, timeout=httpx.Timeout(10.0, connect=4.0), follow_redirects=False
@@ -62,16 +102,20 @@ class AlpacaPaperBroker:
 
     async def get_account(self) -> dict[str, Any]:
         data = await self._json_request(base_url=PAPER_TRADING_URL, method="GET", path="/v2/account")
+        if not isinstance(data, dict):
+            raise BrokerRequestError("Alpaca returned an invalid account payload.")
         return {
             "status": str(data.get("status", "unknown")),
             "currency": str(data.get("currency", "USD")),
-            "equity": float(data.get("equity", 0)),
-            "last_equity": float(data.get("last_equity", 0)),
-            "buying_power": float(data.get("buying_power", 0)),
+            "equity": _number(data.get("equity", 0), "equity"),
+            "last_equity": _number(data.get("last_equity", 0), "last equity"),
+            "buying_power": _number(data.get("buying_power", 0), "buying power"),
             "trading_blocked": bool(data.get("trading_blocked", False)),
         }
 
     async def get_bars(self, spec: StrategySpec, limit: int = 100) -> list[dict[str, Any]]:
+        if not _SYMBOL_RE.fullmatch(spec.symbol):
+            raise ValueError("Invalid stock symbol.")
         if spec.timeframe not in {"1Min", "5Min", "15Min", "1Hour", "1Day"}:
             raise ValueError("Unsupported Alpaca timeframe.")
         if not 10 <= limit <= 1000:
@@ -80,49 +124,121 @@ class AlpacaPaperBroker:
             base_url=MARKET_DATA_URL, method="GET", path=f"/v2/stocks/{spec.symbol}/bars",
             params={"timeframe": spec.timeframe, "limit": limit, "feed": "iex"},
         )
-        bars = payload.get("bars", []) if isinstance(payload, dict) else []
-        if not isinstance(bars, list):
+        if not isinstance(payload, dict) or not isinstance(payload.get("bars", []), list):
             raise BrokerRequestError("Alpaca returned an invalid bars payload.")
-        return [
-            {"timestamp": str(bar["t"]), "open": float(bar["o"]), "high": float(bar["h"]),
-             "low": float(bar["l"]), "close": float(bar["c"]), "volume": float(bar.get("v", 0))}
-            for bar in bars if all(key in bar for key in ("t", "o", "h", "l", "c"))
-        ]
+        bars: list[dict[str, Any]] = []
+        for bar in payload.get("bars", []):
+            if not isinstance(bar, dict) or not all(key in bar for key in ("t", "o", "h", "l", "c")):
+                raise BrokerRequestError("Alpaca returned an incomplete market bar.")
+            try:
+                candle = Candle.model_validate({
+                    "timestamp": bar["t"],
+                    "open": bar["o"],
+                    "high": bar["h"],
+                    "low": bar["l"],
+                    "close": bar["c"],
+                    "volume": bar.get("v", 0),
+                })
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise BrokerRequestError("Alpaca returned an invalid market bar.") from exc
+            bars.append(candle.model_dump(mode="json"))
+        # Prevent an upstream response with unsorted timestamps changing crossover semantics.
+        bars.sort(key=lambda bar: bar["timestamp"])
+        return bars
 
     async def get_position(self, symbol: str) -> dict[str, Any] | None:
-        if not re.fullmatch(r"[A-Z0-9./_-]{1,20}", symbol):
-            raise ValueError("Invalid symbol.")
+        if not _SYMBOL_RE.fullmatch(symbol):
+            raise ValueError("Invalid stock symbol.")
         payload = await self._json_request(
             base_url=PAPER_TRADING_URL, method="GET", path=f"/v2/positions/{symbol}",
             not_found_is_none=True,
         )
         if payload is None:
             return None
-        return {"symbol": str(payload.get("symbol", symbol)), "qty": float(payload.get("qty", 0)),
-                "side": str(payload.get("side", "long")), "market_value": float(payload.get("market_value", 0))}
+        if not isinstance(payload, dict):
+            raise BrokerRequestError("Alpaca returned an invalid position payload.")
+        return {
+            "symbol": str(payload.get("symbol", symbol)),
+            "qty": _number(payload.get("qty", 0), "position quantity", allow_negative=True),
+            "side": str(payload.get("side", "unknown")).lower(),
+            "market_value": _number(payload.get("market_value", 0), "position market value", allow_negative=True),
+        }
+
+    async def get_order_by_client_order_id(self, client_order_id: str) -> dict[str, Any] | None:
+        if not _ORDER_ID_RE.fullmatch(client_order_id):
+            raise ValueError("Invalid client order id.")
+        payload = await self._json_request(
+            base_url=PAPER_TRADING_URL,
+            method="GET",
+            path="/v2/orders:by_client_order_id",
+            params={"client_order_id": client_order_id},
+            not_found_is_none=True,
+        )
+        return None if payload is None else _order_summary(payload)
+
+    @staticmethod
+    def order_matches(
+        order: dict[str, Any], *, symbol: str, side: str, quantity: float, limit_price: float,
+    ) -> bool:
+        try:
+            return (
+                order["symbol"] == symbol
+                and order["side"].lower() == side
+                and math.isclose(float(order["qty"]), round(quantity, 6), rel_tol=0, abs_tol=0.000001)
+                and math.isclose(float(order["limit_price"]), round(limit_price, 4), rel_tol=0, abs_tol=0.0001)
+            )
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
 
     async def submit_limit_order(
         self, *, symbol: str, side: str, quantity: float, limit_price: float, client_order_id: str
     ) -> dict[str, Any]:
-        if not re.fullmatch(r"[A-Z0-9./_-]{1,20}", symbol):
-            raise ValueError("Invalid symbol.")
-        if side not in {"buy", "sell"} or quantity <= 0 or limit_price <= 0:
+        if not _SYMBOL_RE.fullmatch(symbol):
+            raise ValueError("Invalid stock symbol.")
+        if side not in {"buy", "sell"} or not math.isfinite(quantity) or not math.isfinite(limit_price):
             raise ValueError("Invalid limit order values.")
-        if not re.fullmatch(r"[A-Za-z0-9._:-]{8,48}", client_order_id):
+        quantity = round(quantity, 6)
+        limit_price = round(limit_price, 4)
+        if quantity < 0.000001 or limit_price < 0.01:
+            raise ValueError("Quantity or limit price is below supported precision.")
+        if not _ORDER_ID_RE.fullmatch(client_order_id):
             raise ValueError("Invalid client order id.")
-        payload = await self._json_request(
-            base_url=PAPER_TRADING_URL, method="POST", path="/v2/orders",
-            json_body={
-                "symbol": symbol, "qty": format(quantity, ".6f").rstrip("0").rstrip("."),
-                "side": side, "type": "limit", "time_in_force": "day",
-                "limit_price": format(limit_price, ".4f").rstrip("0").rstrip("."),
-                "client_order_id": client_order_id,
-            },
-        )
-        return {
-            "id": str(payload.get("id", "")),
-            "client_order_id": str(payload.get("client_order_id", client_order_id)),
-            "symbol": str(payload.get("symbol", symbol)), "side": str(payload.get("side", side)),
-            "qty": str(payload.get("qty", quantity)), "limit_price": str(payload.get("limit_price", limit_price)),
-            "status": str(payload.get("status", "unknown")),
+
+        existing = await self.get_order_by_client_order_id(client_order_id)
+        if existing:
+            if not self.order_matches(existing, symbol=symbol, side=side, quantity=quantity, limit_price=limit_price):
+                raise BrokerOrderConflict("This client order id already belongs to a different order.")
+            return existing
+
+        body = {
+            "symbol": symbol,
+            "qty": f"{quantity:.6f}".rstrip("0").rstrip("."),
+            "side": side,
+            "type": "limit",
+            "time_in_force": "day",
+            "limit_price": f"{limit_price:.4f}".rstrip("0").rstrip("."),
+            "client_order_id": client_order_id,
         }
+        try:
+            payload = await self._json_request(
+                base_url=PAPER_TRADING_URL, method="POST", path="/v2/orders", json_body=body,
+            )
+            order = _order_summary(payload)
+        except BrokerRequestError as submit_error:
+            # The broker may have accepted an order even if the response was lost. Reconcile by the
+            # stable client order ID before returning a failure, so a retry cannot place a second order.
+            try:
+                existing = await self.get_order_by_client_order_id(client_order_id)
+            except BrokerRequestError:
+                raise submit_error from None
+            if existing and self.order_matches(
+                existing, symbol=symbol, side=side, quantity=quantity, limit_price=limit_price
+            ):
+                return existing
+            if existing:
+                raise BrokerOrderConflict("This client order id already belongs to a different order.") from None
+            raise submit_error from None
+
+        if not self.order_matches(order, symbol=symbol, side=side, quantity=quantity, limit_price=limit_price):
+            raise BrokerRequestError("Alpaca order response did not match the requested order.")
+        return order

@@ -7,6 +7,8 @@ import os
 import re
 from dataclasses import asdict, dataclass
 
+from scalper.schemas import SYMBOL_PATTERN
+
 
 @dataclass(frozen=True)
 class RiskDecision:
@@ -39,16 +41,13 @@ def check_limit_order(
     kill_switch: bool | None = None,
 ) -> RiskDecision:
     reasons: list[str] = []
-    if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z0-9./_-]{1,20}", symbol):
+    if not isinstance(symbol, str) or not re.fullmatch(SYMBOL_PATTERN, symbol):
         reasons.append("invalid_symbol")
     if side not in {"buy", "sell"}:
         reasons.append("invalid_side")
 
     raw_numbers = [quantity, limit_price, account_equity, daily_pnl_pct]
-    finite = [
-        isinstance(value, (int, float)) and math.isfinite(value)
-        for value in raw_numbers
-    ]
+    finite = [isinstance(value, (int, float)) and math.isfinite(value) for value in raw_numbers]
     if not all(finite):
         reasons.append("non_finite_numeric_input")
     safe_quantity = float(quantity) if finite[0] else 0.0
