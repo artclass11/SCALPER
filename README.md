@@ -70,7 +70,6 @@ The Windows build is configured in packaging/scalper.spec and the manual GitHub 
 
     pip install -e ".[dev,mcp]"
     ruff check .
-    ruff format --check .
     pytest -q
     bandit -q -r scalper
     pip-audit

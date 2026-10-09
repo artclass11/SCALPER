@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import timezone
 from typing import Sequence
 
@@ -35,12 +36,23 @@ def run_backtest(
 ) -> dict:
     if len(candles) < max(10, spec.slow_ema + 2):
         raise ValueError(f"Provide at least {max(10, spec.slow_ema + 2)} candles for this strategy.")
+    parameters = [starting_cash, position_fraction, fee_bps, slippage_bps]
+    if not all(math.isfinite(value) for value in parameters):
+        raise ValueError("Backtest parameters must all be finite numbers.")
     if starting_cash <= 0:
         raise ValueError("starting_cash must be positive")
     if not 0 < position_fraction <= 0.5:
         raise ValueError("position_fraction must be in (0, 0.5]")
     if min(fee_bps, slippage_bps) < 0 or max(fee_bps, slippage_bps) > 100:
         raise ValueError("fee and slippage assumptions must be between 0 and 100 basis points")
+
+    stamps = [
+        candle.timestamp.replace(tzinfo=timezone.utc)
+        if candle.timestamp.tzinfo is None else candle.timestamp.astimezone(timezone.utc)
+        for candle in candles
+    ]
+    if any(left >= right for left, right in zip(stamps, stamps[1:])):
+        raise ValueError("Candles must have unique timestamps in strictly increasing chronological order.")
 
     closes = [c.close for c in candles]
     fast_values = ema(closes, spec.fast_ema)
@@ -49,12 +61,12 @@ def run_backtest(
     slip_rate = slippage_bps / 10000.0
     cash, quantity, position = float(starting_cash), 0.0, None
     trades: list[dict] = []
-    equity_points: list[float] = []
     peak_equity, max_drawdown = starting_cash, 0.0
 
     def close_position(raw_price: float, timestamp: str) -> None:
         nonlocal cash, quantity, position
-        assert position is not None
+        if position is None:
+            raise RuntimeError("Cannot close a position when none is open.")
         exit_price = raw_price * (1.0 - slip_rate)
         gross_proceeds = quantity * exit_price
         exit_fee = gross_proceeds * fee_rate
@@ -102,15 +114,11 @@ def run_backtest(
                 close_position(bar.open, _timestamp(bar.timestamp))
 
         marked_equity = cash + quantity * candles[execution_index].close
-        equity_points.append(marked_equity)
         peak_equity = max(peak_equity, marked_equity)
         max_drawdown = min(max_drawdown, marked_equity / peak_equity - 1.0 if peak_equity else 0.0)
 
     if position is not None:
-        last = candles[-1]
-        close_position(last.close, _timestamp(last.timestamp))
-        if equity_points:
-            equity_points[-1] = cash
+        close_position(candles[-1].close, _timestamp(candles[-1].timestamp))
         peak_equity = max(peak_equity, cash)
         max_drawdown = min(max_drawdown, cash / peak_equity - 1.0 if peak_equity else 0.0)
 
