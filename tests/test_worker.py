@@ -9,7 +9,8 @@ def test_worker_detects_latest_upward_cross():
 
 
 def test_worker_detects_latest_downward_cross():
-    closes = [30, 29, 28, 27, 27, 27, 27, 27, 27, 5]
+    # Down-cross occurs on the final bar, after a sustained rise.
+    closes = [5, 6, 7, 8, 9, 10, 11, 12, 13, 1]
     assert _crossover(closes, fast_period=2, slow_period=4) == "sell"
 
 

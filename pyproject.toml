@@ -15,14 +15,14 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1",
   "pydantic>=2.10,<3",
   "httpx>=0.28,<1",
-  "cryptography>=44,<47"
+  "cryptography>=50.0.0,<51"
 ]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.28,<2"]
 dev = [
-  "pytest>=8.3,<9",
-  "pytest-cov>=6,<7",
+  "pytest>=9.0.3,<10",
+  "pytest-cov>=6,<8",
   "ruff>=0.11,<1",
   "bandit>=1.8,<2",
   "pip-audit>=2.8,<3"
