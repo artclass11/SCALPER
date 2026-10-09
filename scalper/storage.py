@@ -75,7 +75,10 @@ def save_strategy(name: str, spec: StrategySpec) -> dict:
 
 def list_strategies(active_only: bool = False) -> list[dict]:
     init_db()
-    query = "SELECT * FROM strategies" + (" WHERE active = 1" if active_only else "") + " ORDER BY created_at DESC"
+    if active_only:
+        query = "SELECT * FROM strategies WHERE active = 1 ORDER BY created_at DESC"
+    else:
+        query = "SELECT * FROM strategies ORDER BY created_at DESC"
     with _connect() as conn:
         rows = conn.execute(query).fetchall()
     return [_public(row) for row in rows]
