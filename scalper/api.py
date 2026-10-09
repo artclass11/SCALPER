@@ -83,7 +83,9 @@ class SecurityHeadersMiddleware:
                 if scope.get("path", "").startswith("/api/"):
                     headers.append((b"cache-control", b"no-store"))
                 message["headers"] = headers
-            await self.inner_app(scope, receive, send_with_headers)
+            await send(message)
+
+        await self.inner_app(scope, receive, send_with_headers)
 
 
 app.add_middleware(SecurityHeadersMiddleware)
