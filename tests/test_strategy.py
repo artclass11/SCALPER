@@ -37,7 +37,8 @@ def test_prompt_length_is_bounded():
 
 
 def test_maximum_length_prompt_does_not_crash_with_validation_error():
-    prompt = "EMA 9 crosses above EMA 21 on SPY " + ("x" * (500 - len("EMA 9 crosses above EMA 21 on SPY")))
+    base = "EMA 9 crosses above EMA 21 on SPY "
+    prompt = base + ("x" * (500 - len(base)))
     spec = parse_strategy(prompt)
     assert len(spec.description) <= 500
 
