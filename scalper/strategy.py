@@ -14,6 +14,14 @@ class UnsupportedStrategy(ValueError):
 _PERIOD = re.compile(r"\bema\s*(\d{1,3})\b|\b(\d{1,3})\s*ema\b", re.IGNORECASE)
 _SYMBOL = re.compile(r"\b(?:on|for|symbol)\s+\$?([A-Z][A-Z0-9.-]{0,14})\b", re.IGNORECASE)
 _TIMEFRAME = re.compile(r"\b(1|5|15)\s*(?:m|min|mins|minute|minutes)\b", re.IGNORECASE)
+_SYMBOL_STOPWORDS = frozenset({
+    "a", "an", "the", "stock", "stocks", "share", "shares", "equity", "equities",
+    "market", "markets", "technology", "tech", "long", "short", "long-term", "short-term",
+    "trading", "strategy", "portfolio", "index", "indices", "etf", "crypto",
+    "cryptocurrency", "growth", "value", "trend", "trending", "rising", "falling",
+    "bullish", "bearish", "volatile", "volatility", "breakout", "uptrend", "downtrend",
+    "price", "prices", "daily", "minute",
+})
 
 
 def parse_strategy(prompt: str) -> StrategySpec:
@@ -38,8 +46,13 @@ def parse_strategy(prompt: str) -> StrategySpec:
     if fast < 2 or fast > 200 or slow > 500 or fast >= slow:
         raise UnsupportedStrategy("Choose fast EMA from 2–200 and slow EMA greater than fast (max 500).")
 
-    symbol_match = _SYMBOL.search(text)
-    symbol = symbol_match.group(1).upper() if symbol_match else "SPY"
+    # Natural-language descriptors after "on"/"for" are not tickers. Ignore common
+    # trading vocabulary and use the visible SPY default instead of inventing a symbol.
+    symbol = next(
+        (match.group(1).upper() for match in _SYMBOL.finditer(text)
+         if match.group(1).casefold() not in _SYMBOL_STOPWORDS),
+        "SPY",
+    )
     frame_match = _TIMEFRAME.search(text)
     if frame_match:
         timeframe = {"1": "1Min", "5": "5Min", "15": "15Min"}[frame_match.group(1)]

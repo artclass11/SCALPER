@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from scalper.storage import set_strategy_active
-from scalper.worker import _closed_bars, _crossover, process_strategy
+from scalper.worker import _closed_bars, _crossover, _worker_client_order_id, process_strategy
 
 
 def test_worker_detects_latest_upward_cross():
@@ -90,3 +90,36 @@ def test_inactive_strategy_is_rechecked_before_submission(client, monkeypatch):
     monkeypatch.setattr("scalper.worker.AlpacaPaperBroker", FakeBroker)
     asyncio.run(process_strategy(item))
     assert FakeBroker.submissions == 0
+
+
+
+def test_closed_bars_are_sorted_deduplicated_and_normalized():
+    now = datetime.now(timezone.utc)
+    newer = (now - timedelta(minutes=20)).isoformat()
+    older = (now - timedelta(minutes=30)).isoformat()
+    bars = [
+        {"timestamp": newer, "close": 20},
+        {"timestamp": older.replace("+00:00", "Z"), "close": 10},
+        {"timestamp": older, "close": 11},
+    ]
+    closed = _closed_bars(bars, "1Min")
+    assert [bar["close"] for bar in closed] == [10, 20]
+    assert [bar["timestamp"] for bar in closed] == sorted(bar["timestamp"] for bar in closed)
+
+
+def test_worker_order_id_uses_long_unique_strategy_prefix_and_stays_within_broker_limit():
+    first_id = "12345678-1234-4234-8234-123456789abc"
+    second_id = "12345678-9999-4234-8234-123456789abc"
+    stamp = "2026-10-10T07:15:00+00:00"
+    first = _worker_client_order_id(first_id, "buy", stamp)
+    second = _worker_client_order_id(second_id, "buy", stamp)
+    assert first != second
+    assert len(first) <= 48
+    assert len(first) >= 8
+    assert _worker_client_order_id(first_id, "buy", stamp) == first
+
+
+def test_worker_order_id_rejects_invalid_side():
+    import pytest
+    with pytest.raises(ValueError, match="Unsupported order side"):
+        _worker_client_order_id("12345678-abcd", "cover", "2026-10-10T07:15:00+00:00")
