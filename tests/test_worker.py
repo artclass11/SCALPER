@@ -220,3 +220,42 @@ def test_worker_uses_extended_id_when_no_legacy_order_exists():
     assert broker.submitted["client_order_id"] == _worker_client_order_id(strategy_id, "buy", stamp)
     assert len(broker.submitted["client_order_id"]) <= 48
     assert result["status"] == "accepted"
+
+
+
+def test_worker_checkpoints_and_records_legacy_order_conflict(client, monkeypatch):
+    spec = {"name": "Test EMA 2/4", "symbol": "SPY", "timeframe": "1Day",
+            "fast_ema": 2, "slow_ema": 4, "strategy_type": "ema_crossover"}
+    created = client.post("/api/strategies", json={"name": "Legacy conflict", "spec": spec})
+    assert created.status_code == 200
+    item = created.json()
+    set_strategy_active(item["id"], True)
+
+    now = datetime.now(timezone.utc)
+    closes = [10, 9, 8, 7, 7, 7, 7, 7, 7, 30]
+    bars = [
+        {"timestamp": (now - timedelta(days=(len(closes) - idx + 1))).isoformat(),
+         "open": close, "high": close + 1, "low": max(0.01, close - 1),
+         "close": close, "volume": 1000}
+        for idx, close in enumerate(closes)
+    ]
+
+    class FakeBroker:
+        def __init__(self): pass
+        async def get_bars(self, strategy, limit=100): return bars
+        async def get_account(self):
+            return {"equity": 10000.0, "last_equity": 10000.0, "trading_blocked": False}
+        async def get_position(self, symbol): return None
+        async def get_order_by_client_order_id(self, client_order_id):
+            return {"id": "legacy-conflict", "symbol": "AAPL", "side": "buy",
+                    "qty": "2", "limit_price": "100", "status": "accepted"}
+        @staticmethod
+        def order_matches(order, **kwargs): return False
+        async def submit_limit_order(self, **kwargs):
+            raise AssertionError("A conflicting legacy ID must never submit a second order.")
+
+    monkeypatch.setattr("scalper.worker.AlpacaPaperBroker", FakeBroker)
+    asyncio.run(process_strategy(item))
+    saved = client.get("/api/strategies").json()[0]
+    assert saved["last_processed_bar"] == bars[-1]["timestamp"]
+    assert saved["last_error"] == "LegacyOrderConflict"

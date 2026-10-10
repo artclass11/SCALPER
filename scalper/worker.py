@@ -160,10 +160,15 @@ async def process_strategy(item: dict) -> None:
                 if account["last_equity"] > 0 else 0,
             )
             if decision.approved and not env_bool("SCALPER_KILL_SWITCH"):
-                order = await _submit_worker_limit_order(
-                    broker, strategy_id=item["id"], spec=spec, side="buy", quantity=qty,
-                    limit_price=price, bar_timestamp=bar_stamp,
-                )
+                try:
+                    order = await _submit_worker_limit_order(
+                        broker, strategy_id=item["id"], spec=spec, side="buy", quantity=qty,
+                        limit_price=price, bar_timestamp=bar_stamp,
+                    )
+                except BrokerOrderConflict:
+                    update_processed_bar(item["id"], bar_stamp)
+                    update_strategy_error(item["id"], "LegacyOrderConflict")
+                    return
     elif signal == "sell" and position_qty > 0 and not account["trading_blocked"]:
         price = max(0.01, round(float(latest["close"]), 2))
         decision = check_limit_order(
@@ -171,10 +176,15 @@ async def process_strategy(item: dict) -> None:
             account_equity=max(account["equity"], 1.0), reduce_only=True,
         )
         if decision.approved:
-            order = await _submit_worker_limit_order(
-                broker, strategy_id=item["id"], spec=spec, side="sell", quantity=position_qty,
-                limit_price=price, bar_timestamp=bar_stamp,
-            )
+            try:
+                order = await _submit_worker_limit_order(
+                    broker, strategy_id=item["id"], spec=spec, side="sell", quantity=position_qty,
+                    limit_price=price, bar_timestamp=bar_stamp,
+                )
+            except BrokerOrderConflict:
+                update_processed_bar(item["id"], bar_stamp)
+                update_strategy_error(item["id"], "LegacyOrderConflict")
+                return
 
     update_processed_bar(item["id"], bar_stamp)
     if order:
