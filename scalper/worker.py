@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from scalper.backtest import ema
-from scalper.brokers.alpaca_paper import AlpacaPaperBroker
+from scalper.brokers.alpaca_paper import AlpacaPaperBroker, BrokerOrderConflict
 from scalper.config import alpaca_paper_configured, env_bool
 from scalper.risk import check_limit_order
 from scalper.schemas import StrategySpec
@@ -31,16 +31,75 @@ def _frame_duration(frame: str) -> timedelta:
 def _closed_bars(bars: list[dict], timeframe: str) -> list[dict]:
     now = datetime.now(timezone.utc)
     duration = _frame_duration(timeframe)
-    result = []
+    by_timestamp: dict[datetime, dict] = {}
     for bar in bars:
         try:
             parsed = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
             stamp = parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
-        except (TypeError, ValueError, KeyError):
+            stamp = stamp.astimezone(timezone.utc)
+        except (TypeError, ValueError, KeyError, AttributeError):
             continue
         if now >= stamp + duration + timedelta(seconds=3):
-            result.append(bar)
-    return result
+            # Canonical UTC timestamps make duplicate and offset-formatted bars comparable.
+            if stamp not in by_timestamp:
+                # Preserve the upstream timestamp spelling because older worker versions saved
+                # that exact string in SQLite; canonicalize only the internal sort/dedup key.
+                by_timestamp[stamp] = dict(bar)
+    return [by_timestamp[key] for key in sorted(by_timestamp)]
+
+
+def _worker_client_order_id(strategy_id: str, side: str, bar_timestamp: str) -> str:
+    """Build a stable, broker-safe key with enough strategy entropy for many saved strategies."""
+    if side not in {"buy", "sell"}:
+        raise ValueError("Unsupported order side.")
+    strategy_key = re.sub(r"[^A-Za-z0-9]", "", strategy_id)[:16]
+    bar_key = re.sub(r"[^A-Za-z0-9]", "", bar_timestamp)[:20]
+    if len(strategy_key) < 8 or len(bar_key) < 8:
+        raise ValueError("Could not build a stable paper order id.")
+    # Max length is 45 chars (within Alpaca's 48-character limit).
+    return f"sc-{strategy_key}-{side}-{bar_key}"
+
+
+
+def _legacy_worker_client_order_id(strategy_id: str, side: str, bar_timestamp: str) -> str:
+    """Recreate pre-hardening order IDs so uncertain in-flight orders remain reconcilable."""
+    if side not in {"buy", "sell"}:
+        raise ValueError("Unsupported order side.")
+    strategy_key = strategy_id[:8]
+    bar_key = re.sub(r"[^A-Za-z0-9]", "", bar_timestamp)[:20]
+    if len(strategy_key) < 8 or len(bar_key) < 8:
+        raise ValueError("Could not build a legacy paper order id.")
+    return f"scalper-{strategy_key}-{side}-{bar_key}"
+
+
+async def _submit_worker_limit_order(
+    broker: AlpacaPaperBroker,
+    *,
+    strategy_id: str,
+    spec: StrategySpec,
+    side: str,
+    quantity: float,
+    limit_price: float,
+    bar_timestamp: str,
+) -> dict:
+    """Reconcile an old order key before using the newer, wider strategy key."""
+    legacy_id = _legacy_worker_client_order_id(strategy_id, side, bar_timestamp)
+    existing = await broker.get_order_by_client_order_id(legacy_id)
+    if existing:
+        if not broker.order_matches(
+            existing, symbol=spec.symbol, side=side, quantity=quantity, limit_price=limit_price
+        ):
+            raise BrokerOrderConflict(
+                "A previous worker order ID belongs to a different order; refusing a possible duplicate."
+            )
+        return existing
+    return await broker.submit_limit_order(
+        symbol=spec.symbol,
+        side=side,
+        quantity=quantity,
+        limit_price=limit_price,
+        client_order_id=_worker_client_order_id(strategy_id, side, bar_timestamp),
+    )
 
 
 def _crossover(closes: list[float], fast_period: int, slow_period: int) -> str | None:
@@ -75,6 +134,9 @@ async def process_strategy(item: dict) -> None:
     # flat, because a "sell" signal could otherwise increase a short position.
     if position and position.get("side", "").lower() != "long":
         update_strategy_error(item["id"], "UnsupportedPositionSide")
+        # This bar cannot be acted on safely; record the skip to avoid repeating the same
+        # account/position calls every polling cycle while waiting for the next completed bar.
+        update_processed_bar(item["id"], bar_stamp)
         return
     position_qty = position["qty"] if position and position["qty"] > 0 else 0.0
     order = None
@@ -98,11 +160,15 @@ async def process_strategy(item: dict) -> None:
                 if account["last_equity"] > 0 else 0,
             )
             if decision.approved and not env_bool("SCALPER_KILL_SWITCH"):
-                key = re.sub(r"[^A-Za-z0-9]", "", bar_stamp)[:20]
-                order = await broker.submit_limit_order(
-                    symbol=spec.symbol, side="buy", quantity=qty, limit_price=price,
-                    client_order_id=f"scalper-{item['id'][:8]}-buy-{key}",
-                )
+                try:
+                    order = await _submit_worker_limit_order(
+                        broker, strategy_id=item["id"], spec=spec, side="buy", quantity=qty,
+                        limit_price=price, bar_timestamp=bar_stamp,
+                    )
+                except BrokerOrderConflict:
+                    update_processed_bar(item["id"], bar_stamp)
+                    update_strategy_error(item["id"], "LegacyOrderConflict")
+                    return
     elif signal == "sell" and position_qty > 0 and not account["trading_blocked"]:
         price = max(0.01, round(float(latest["close"]), 2))
         decision = check_limit_order(
@@ -110,11 +176,15 @@ async def process_strategy(item: dict) -> None:
             account_equity=max(account["equity"], 1.0), reduce_only=True,
         )
         if decision.approved:
-            key = re.sub(r"[^A-Za-z0-9]", "", bar_stamp)[:20]
-            order = await broker.submit_limit_order(
-                symbol=spec.symbol, side="sell", quantity=position_qty, limit_price=price,
-                client_order_id=f"scalper-{item['id'][:8]}-sell-{key}",
-            )
+            try:
+                order = await _submit_worker_limit_order(
+                    broker, strategy_id=item["id"], spec=spec, side="sell", quantity=position_qty,
+                    limit_price=price, bar_timestamp=bar_stamp,
+                )
+            except BrokerOrderConflict:
+                update_processed_bar(item["id"], bar_stamp)
+                update_strategy_error(item["id"], "LegacyOrderConflict")
+                return
 
     update_processed_bar(item["id"], bar_stamp)
     if order:

@@ -47,3 +47,24 @@ def test_maximum_length_prompt_does_not_crash_with_validation_error():
 def test_strategy_schema_rejects_path_and_non_symbol_input(symbol):
     with pytest.raises(ValidationError):
         StrategySpec(name="Bad symbol", symbol=symbol, fast_ema=9, slow_ema=21)
+
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "EMA crossover for technology stocks",
+        "EMA 9 crosses above EMA 21 for long-term trading",
+        "EMA crossover on the market",
+        "EMA crossover on a stock portfolio",
+        "EMA crossover for EMA signals",
+        "EMA crossover for buy signals on a bearish market",
+    ],
+)
+def test_natural_language_descriptors_are_not_misread_as_tickers(prompt):
+    assert parse_strategy(prompt).symbol == "SPY"
+
+
+def test_real_symbol_after_generic_phrase_is_still_found():
+    spec = parse_strategy("EMA 9 crosses above EMA 21 on the market, for AAPL")
+    assert spec.symbol == "AAPL"
