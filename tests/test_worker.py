@@ -55,9 +55,14 @@ def test_worker_does_not_submit_sell_or_buy_when_account_position_is_short(clien
             self.submissions += 1
             raise AssertionError("Worker must never add to or reinterpret a short position.")
 
+    processed_bars = []
+    monkeypatch.setattr("scalper.worker.update_processed_bar",
+                        lambda strategy_id, timestamp: processed_bars.append((strategy_id, timestamp)))
     monkeypatch.setattr("scalper.worker.AlpacaPaperBroker", FakeBroker)
     asyncio.run(process_strategy(item))
     assert FakeBroker.submissions == 0
+    assert len(processed_bars) == 1
+    assert processed_bars[0][0] == item["id"]
 
 
 def test_inactive_strategy_is_rechecked_before_submission(client, monkeypatch):

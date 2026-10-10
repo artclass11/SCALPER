@@ -57,6 +57,8 @@ def test_strategy_schema_rejects_path_and_non_symbol_input(symbol):
         "EMA 9 crosses above EMA 21 for long-term trading",
         "EMA crossover on the market",
         "EMA crossover on a stock portfolio",
+        "EMA crossover for EMA signals",
+        "EMA crossover for buy signals on a bearish market",
     ],
 )
 def test_natural_language_descriptors_are_not_misread_as_tickers(prompt):

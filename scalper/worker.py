@@ -93,6 +93,9 @@ async def process_strategy(item: dict) -> None:
     # flat, because a "sell" signal could otherwise increase a short position.
     if position and position.get("side", "").lower() != "long":
         update_strategy_error(item["id"], "UnsupportedPositionSide")
+        # This bar cannot be acted on safely; record the skip to avoid repeating the same
+        # account/position calls every polling cycle while waiting for the next completed bar.
+        update_processed_bar(item["id"], bar_stamp)
         return
     position_qty = position["qty"] if position and position["qty"] > 0 else 0.0
     order = None

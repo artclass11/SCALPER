@@ -20,7 +20,8 @@ _SYMBOL_STOPWORDS = frozenset({
     "trading", "strategy", "portfolio", "index", "indices", "etf", "crypto",
     "cryptocurrency", "growth", "value", "trend", "trending", "rising", "falling",
     "bullish", "bearish", "volatile", "volatility", "breakout", "uptrend", "downtrend",
-    "price", "prices", "daily", "minute",
+    "price", "prices", "daily", "minute", "ema", "cross", "crosses", "crossover", "crossovers",
+    "above", "below", "signal", "signals", "buy", "sell", "nasdaq", "nyse",
 })
 
 
