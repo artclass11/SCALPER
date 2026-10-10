@@ -191,3 +191,32 @@ def test_worker_fails_closed_if_legacy_order_id_belongs_to_different_order():
             FakeBroker(), strategy_id=strategy_id, spec=spec, side="buy",
             quantity=2, limit_price=100, bar_timestamp=stamp,
         ))
+
+
+
+def test_worker_uses_extended_id_when_no_legacy_order_exists():
+    from scalper.schemas import StrategySpec
+
+    strategy_id = "12345678-1234-4234-8234-123456789abc"
+    spec = StrategySpec(name="Test EMA 2/4", symbol="SPY", fast_ema=2, slow_ema=4)
+    stamp = "2026-10-10T07:15:00Z"
+
+    class FakeBroker:
+        queried_id = None
+        submitted = None
+        async def get_order_by_client_order_id(self, client_order_id):
+            self.queried_id = client_order_id
+            return None
+        async def submit_limit_order(self, **kwargs):
+            self.submitted = kwargs
+            return {"status": "accepted", **kwargs}
+
+    broker = FakeBroker()
+    result = asyncio.run(_submit_worker_limit_order(
+        broker, strategy_id=strategy_id, spec=spec, side="buy",
+        quantity=2, limit_price=100, bar_timestamp=stamp,
+    ))
+    assert broker.queried_id == _legacy_worker_client_order_id(strategy_id, "buy", stamp)
+    assert broker.submitted["client_order_id"] == _worker_client_order_id(strategy_id, "buy", stamp)
+    assert len(broker.submitted["client_order_id"]) <= 48
+    assert result["status"] == "accepted"
