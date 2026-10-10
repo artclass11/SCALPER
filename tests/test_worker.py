@@ -2,7 +2,14 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from scalper.storage import set_strategy_active
-from scalper.worker import _closed_bars, _crossover, _worker_client_order_id, process_strategy
+from scalper.worker import (
+    _closed_bars,
+    _crossover,
+    _legacy_worker_client_order_id,
+    _submit_worker_limit_order,
+    _worker_client_order_id,
+    process_strategy,
+)
 
 
 def test_worker_detects_latest_upward_cross():
@@ -128,3 +135,59 @@ def test_worker_order_id_rejects_invalid_side():
     import pytest
     with pytest.raises(ValueError, match="Unsupported order side"):
         _worker_client_order_id("12345678-abcd", "cover", "2026-10-10T07:15:00+00:00")
+
+
+
+def test_worker_reconciles_existing_legacy_order_before_new_order_id():
+    strategy_id = "12345678-1234-4234-8234-123456789abc"
+    spec = {"name": "Test EMA 2/4", "symbol": "SPY", "timeframe": "1Day",
+            "fast_ema": 2, "slow_ema": 4, "strategy_type": "ema_crossover"}
+    from scalper.schemas import StrategySpec
+    validated_spec = StrategySpec.model_validate(spec)
+    stamp = "2026-10-10T07:15:00Z"
+    legacy_id = _legacy_worker_client_order_id(strategy_id, "buy", stamp)
+    existing = {"id": "order-existing", "symbol": "SPY", "side": "buy",
+                "qty": "2", "limit_price": "100", "status": "accepted"}
+
+    class FakeBroker:
+        async def get_order_by_client_order_id(self, client_order_id):
+            assert client_order_id == legacy_id
+            return existing
+        @staticmethod
+        def order_matches(order, **kwargs):
+            return (order["symbol"] == kwargs["symbol"] and order["side"] == kwargs["side"]
+                    and float(order["qty"]) == kwargs["quantity"]
+                    and float(order["limit_price"]) == kwargs["limit_price"])
+        async def submit_limit_order(self, **kwargs):
+            raise AssertionError("Must not submit a second order for an old idempotency key.")
+
+    result = asyncio.run(_submit_worker_limit_order(
+        FakeBroker(), strategy_id=strategy_id, spec=validated_spec, side="buy",
+        quantity=2, limit_price=100, bar_timestamp=stamp,
+    ))
+    assert result == existing
+
+
+def test_worker_fails_closed_if_legacy_order_id_belongs_to_different_order():
+    import pytest
+    from scalper.brokers.alpaca_paper import BrokerOrderConflict
+    from scalper.schemas import StrategySpec
+
+    strategy_id = "12345678-1234-4234-8234-123456789abc"
+    spec = StrategySpec(name="Test EMA 2/4", symbol="SPY", fast_ema=2, slow_ema=4)
+    stamp = "2026-10-10T07:15:00Z"
+
+    class FakeBroker:
+        async def get_order_by_client_order_id(self, client_order_id):
+            return {"id": "conflict", "symbol": "AAPL", "side": "buy",
+                    "qty": "2", "limit_price": "100", "status": "accepted"}
+        @staticmethod
+        def order_matches(order, **kwargs): return False
+        async def submit_limit_order(self, **kwargs):
+            raise AssertionError("A conflicting legacy key must never trigger submission.")
+
+    with pytest.raises(BrokerOrderConflict):
+        asyncio.run(_submit_worker_limit_order(
+            FakeBroker(), strategy_id=strategy_id, spec=spec, side="buy",
+            quantity=2, limit_price=100, bar_timestamp=stamp,
+        ))
