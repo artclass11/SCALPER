@@ -109,7 +109,7 @@ def test_closed_bars_are_sorted_deduplicated_and_normalized():
     ]
     closed = _closed_bars(bars, "1Min")
     assert [bar["close"] for bar in closed] == [10, 20]
-    assert [bar["timestamp"] for bar in closed] == sorted(bar["timestamp"] for bar in closed)
+    assert [bar["timestamp"] for bar in closed] == [older.replace("+00:00", "Z"), newer]
 
 
 def test_worker_order_id_uses_long_unique_strategy_prefix_and_stays_within_broker_limit():

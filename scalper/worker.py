@@ -31,7 +31,7 @@ def _frame_duration(frame: str) -> timedelta:
 def _closed_bars(bars: list[dict], timeframe: str) -> list[dict]:
     now = datetime.now(timezone.utc)
     duration = _frame_duration(timeframe)
-    by_timestamp: dict[str, dict] = {}
+    by_timestamp: dict[datetime, dict] = {}
     for bar in bars:
         try:
             parsed = datetime.fromisoformat(bar["timestamp"].replace("Z", "+00:00"))
@@ -41,11 +41,10 @@ def _closed_bars(bars: list[dict], timeframe: str) -> list[dict]:
             continue
         if now >= stamp + duration + timedelta(seconds=3):
             # Canonical UTC timestamps make duplicate and offset-formatted bars comparable.
-            key = stamp.isoformat()
-            if key not in by_timestamp:
-                normalized = dict(bar)
-                normalized["timestamp"] = key
-                by_timestamp[key] = normalized
+            if stamp not in by_timestamp:
+                # Preserve the upstream timestamp spelling because older worker versions saved
+                # that exact string in SQLite; canonicalize only the internal sort/dedup key.
+                by_timestamp[stamp] = dict(bar)
     return [by_timestamp[key] for key in sorted(by_timestamp)]
 
 
